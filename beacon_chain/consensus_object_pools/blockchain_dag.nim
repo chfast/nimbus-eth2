@@ -11,18 +11,15 @@ import
   chronos,
   std/[options, sequtils, tables, sets],
   stew/[assign2, byteutils, results],
+  eth/async_utils,
   metrics, snappy, chronicles,
   ../spec/[beaconstate, eth2_merkleization, eth2_ssz_serialization, helpers,
     state_transition, validator],
-  ../spec/datatypes/[phase0, altair],
+  ../spec/datatypes/[phase0, altair, bellatrix],
   ".."/beacon_chain_db,
   "."/[block_pools_types, block_quarantine]
 
-import stint
-import stint/endians2
-
-import web3/[engine_api, ethtypes]
-import ../eth1/eth1_monitor   # for asBlockHash only
+import web3/engine_api_types
 
 export
   eth2_merkleization, eth2_ssz_serialization,
@@ -509,7 +506,7 @@ proc init*(T: type ChainDAGRef, cfg: RuntimeConfig, db: BeaconChainDB,
     elif slot == tailRef.slot:
       midRef = tailRef
     elif slot > tailRef.slot:
-      let next = BlockRef.init(root, slot)
+      let next = BlockRef.init(root, default(Eth2Digest), slot)
       link(midRef, next)
       midRef = next
 
@@ -1738,9 +1735,9 @@ func needsBackfill*(dag: ChainDAGRef): bool =
   dag.backfill.slot > dag.genesis.slot
 
 proc newExecutionPayload*(
-    web3Provider: auto, executionPayload: merge.ExecutionPayload):
-    Future[string] {.async.} =
-  debug "executePayload: inserting block into execution engine",
+    web3Provider: auto, executionPayload: bellatrix.ExecutionPayload):
+    Future[PayloadExecutionStatus] {.async.} =
+  debug "newPayload: inserting block into execution engine",
     parentHash = executionPayload.parent_hash,
     blockHash = executionPayload.block_hash,
     stateRoot = shortLog(executionPayload.state_root),
@@ -1755,35 +1752,18 @@ proc newExecutionPayload*(
     baseFeePerGas = UInt256.fromBytesLE(executionPayload.base_fee_per_gas.data),
     numTransactions = executionPayload.transactions.len
 
-  template getTypedTransaction(t: Transaction): TypedTransaction =
-    TypedTransaction(t.distinctBase)
-  let rpcExecutionPayload = (ref engine_api.ExecutionPayloadV1)(
-    parentHash: executionPayload.parent_hash.asBlockHash,
-    feeRecipient: Address(executionPayload.feeRecipient.data),
-    stateRoot: executionPayload.state_root.asBlockHash,
-    receiptsRoot: executionPayload.receipts_root.asBlockHash,
-    logsBloom: FixedBytes[256](executionPayload.logs_bloom.data),
-    random: executionPayload.random.asBlockHash,
-    blockNumber: Quantity(executionPayload.block_number),
-    gasLimit: Quantity(executionPayload.gas_limit),
-    gasUsed: Quantity(executionPayload.gas_used),
-    timestamp: Quantity(executionPayload.timestamp),
-    extraData: DynamicBytes[0, 32](executionPayload.extra_data),
-    baseFeePerGas:
-      UInt256.fromBytesLE(executionPayload.base_fee_per_gas.data),
-    blockHash: executionPayload.block_hash.asBlockHash,
-    transactions: mapIt(executionPayload.transactions, it.getTypedTransaction))
   try:
-    let payloadStatus =
-      await(web3Provider.executePayload(rpcExecutionPayload[])).status
-    if payloadStatus notin ["VALID", "INVALID", "SYNCING"]:
-      # TODO use a constrained abstraction; the nim-web3 attempt to create such
-      # didn't work
-      debug "newExecutionPayload: invalid status from execution layer",
-        payloadStatus
-      return "INVALID"
+    let
+      payloadResponse =
+        awaitWithTimeout(
+            web3Provider.newPayload(
+              executionPayload.asEngineExecutionPayload),
+            650.milliseconds):
+          info "newPayload: newExecutionPayload timed out"
+          PayloadStatusV1(status: PayloadExecutionStatus.syncing)
+      payloadStatus = payloadResponse.status
 
     return payloadStatus
   except CatchableError as err:
-    debug "newExecutionPayload failed", msg = err.msg
-    return "INVALID"
+    info "newExecutionPayload failed", msg = err.msg
+    return PayloadExecutionStatus.syncing

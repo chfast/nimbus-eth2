@@ -939,7 +939,7 @@ proc onSlotStart(
     sync =
       if node.syncManager.inProgress: node.syncManager.syncStatus
       else: "synced",
-    peers = len(node.network.peerPool),
+    peers = node.network.peerCount,
     head = shortLog(node.dag.head),
     finalized = shortLog(getStateField(
       node.dag.headState.data, finalized_checkpoint)),
@@ -995,7 +995,7 @@ proc runOnSecondLoop(node: BeaconNode) {.async.} =
     trace "onSecond task completed", sleepTime, processingTime
 
 func connectedPeersCount(node: BeaconNode): int =
-  len(node.network.peerPool)
+  node.network.peerCount()
 
 proc installRpcHandlers(rpcServer: RpcServer, node: BeaconNode) {.
     raises: [Defect, CatchableError].} =

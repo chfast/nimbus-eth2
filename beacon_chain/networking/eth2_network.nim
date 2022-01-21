@@ -975,7 +975,7 @@ proc queryRandom*(
   d.rng[].shuffle(filtered)
   return filtered.sortedByIt(-it[0]).mapIt(it[1])
 
-proc trimConnections(node: Eth2Node, count: int) {.async.} =
+proc trimConnections(node: Eth2Node, count: int, maxScore: int) {.async.} =
   # Kill `count` peers, scoring them to remove the least useful ones
 
   var scores = initOrderedTable[PeerID, int]()
@@ -1028,6 +1028,8 @@ proc trimConnections(node: Eth2Node, count: int) {.async.} =
   for peerId in scores.keys:
     #TODO kill a single connection instead of the whole peer
     # Not possible with the current libp2p's conn management
+    if scores[peerId] > maxScore: return
+
     debug "kicking peer", peerId, score=scores[peerId]
     await node.switch.disconnect(peerId)
     dec toKick
@@ -1631,6 +1633,10 @@ proc peerPingerHeartbeat(node: Eth2Node) {.async.} =
       if heartbeatStart_m - lastMetadata > MetadataRequestMaxFailureTime:
         debug "no metadata from peer, kicking it", peer
         asyncSpawn peer.disconnect(PeerScoreLow)
+
+    let toKick = node.peerCount() - node.wantedPeers
+    if toKick > 0:
+      await node.trimConnections(toKick, 0)
 
     await sleepAsync(5.seconds)
 

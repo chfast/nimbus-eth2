@@ -984,7 +984,7 @@ proc trimConnections(node: Eth2Node, count: int, maxScore: int) {.async.} =
   # During sync, only this will be used to score peers
   #
   # A peer subscribed to all stabilitySubnets will
-  # have 640 points
+  # have 64 points
   for peer in node.peers.values:
     if peer.connectionState != Connected: continue
     if peer.metadata.isNone: continue
@@ -992,7 +992,7 @@ proc trimConnections(node: Eth2Node, count: int, maxScore: int) {.async.} =
     let
       stabilitySubnets = peer.metadata.get().attnets
       stabilitySubnetsCount = stabilitySubnets.countOnes()
-      thisPeersScore = 10 * stabilitySubnetsCount
+      thisPeersScore = stabilitySubnetsCount
 
     scores[peer.peerId] = thisPeersScore
 
@@ -1000,14 +1000,14 @@ proc trimConnections(node: Eth2Node, count: int, maxScore: int) {.async.} =
   # This gives priority to peers in topics with few peers
   # For instance, a topic with `dHigh` peers will give 80 points to each peer
   # Whereas a topic with `dLow` peers will give 250 points to each peer
-  for topic, _ in node.pubsub.topics:
+  for topic, _ in node.pubsub.gossipsub:
     let
-      peerCount = node.pubsub.mesh.peers(topic)
+      peerCount = node.pubsub.gossipsub.peers(topic)
       scorePerPeer = 1_000 div max(peerCount, 1)
 
     if peerCount == 0: continue
 
-    for peer in node.pubsub.mesh[topic]:
+    for peer in node.pubsub.gossipsub[topic]:
       if peer.peerId notin scores: continue
 
       # Divide by the number of connections
@@ -1636,7 +1636,7 @@ proc peerPingerHeartbeat(node: Eth2Node) {.async.} =
 
     let toKick = node.peerCount() - node.wantedPeers
     if toKick > 0:
-      await node.trimConnections(toKick, 0)
+      await node.trimConnections(toKick, 100)
 
     await sleepAsync(5.seconds)
 

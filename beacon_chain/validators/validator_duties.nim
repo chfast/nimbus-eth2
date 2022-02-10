@@ -511,6 +511,9 @@ proc makeBeaconBlockForHeadAndSlot*(node: BeaconNode,
           # TODO a more reasonable fallback
           doAssert not node.eth1Monitor.isNil
 
+          # Minimize window for Eth1 monitor to shut down connection
+          await node.consensusManager.eth1Monitor.ensureDataProvider()
+
           # TODO the terminalBlockHash fallback exists to bootstrap this, but
           # ugliness/complexity probably avoidable
           let
@@ -533,13 +536,13 @@ proc makeBeaconBlockForHeadAndSlot*(node: BeaconNode,
                 terminalBlockHash
             payload_id = (await forkchoice_updated(
               proposalState.data.bellatrixData.data, latestHead, latestFinalized,
-              feeRecipient, node.consensusManager.web3Provider))
+              feeRecipient, node.consensusManager.eth1Monitor.dataProvider))
             payload = await get_execution_payload(
-              payload_id, node.consensusManager.web3Provider)
+              payload_id, node.consensusManager.eth1Monitor.dataProvider)
             # TODO should probably ensure failure in executePayload prevents
             # block creation
             executionPayloadStatus =
-              await node.consensusManager.web3Provider.newExecutionPayload(
+              await node.consensusManager.eth1Monitor.dataProvider.newExecutionPayload(
                 payload)
           info "makeBeaconBlockForHeadAndSlot: proposed merge block",
             payload_id,

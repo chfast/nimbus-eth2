@@ -473,13 +473,8 @@ proc init*(T: type BeaconNode,
           config.validatorsDir(), SlashingDbName)
     validatorPool = newClone(ValidatorPool.init(slashingProtectionDB))
 
-    # TODO waitFor etc. This is temporary init code, so fine for now
-    web3Provider = waitFor newWeb3DataProvider(
-      default(Eth1Address), if config.web3Urls.len > 0: config.web3Urls[0] else: "")
-
     consensusManager = ConsensusManager.new(
-      dag, attestationPool, quarantine, web3Provider.get
-    )
+      dag, attestationPool, quarantine, eth1Monitor)
     blockProcessor = BlockProcessor.new(
       config.dumpEnabled, config.dumpDirInvalid, config.dumpDirIncoming,
       rng, taskpool, consensusManager, validatorMonitor, getBeaconTime)

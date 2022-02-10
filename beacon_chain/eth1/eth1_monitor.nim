@@ -14,7 +14,7 @@ import
   chronos, json, metrics, chronicles/timings, stint/endians2,
   web3, web3/ethtypes as web3Types, web3/ethhexstrings, web3/engine_api,
   eth/common/eth_types,
-  eth/async_utils, stew/[byteutils, shims/hashes],
+  eth/async_utils, stew/[byteutils, objects, shims/hashes],
   # Local modules:
   ../spec/[eth2_merkleization, forks, helpers],
   ../spec/datatypes/[base, phase0, bellatrix],
@@ -112,7 +112,7 @@ type
     depositContractAddress*: Eth1Address
     forcePolling: bool
 
-    dataProvider: Web3DataProviderRef
+    dataProvider*: Web3DataProviderRef  # TODO evidently not meant for export
     latestEth1Block: Option[FullBlockId]
 
     depositsChain: Eth1Chain
@@ -858,11 +858,6 @@ proc new*(T: type Web3DataProvider,
     ns = web3.contractSender(DepositContract, depositContractAddress)
 
   return ok Web3DataProviderRef(url: web3Url, web3: web3, ns: ns)
-
-# route around eth1 monitor initialization gating; intentionally a bit clunky
-proc newWeb3DataProvider*(depositContractAddress: Eth1Address, web3Url: string):
-    Future[Result[Web3DataProviderRef, string]] =
-  Web3DataProvider.new(depositContractAddress, web3Url)
 
 proc putInitialDepositContractSnapshot*(db: BeaconChainDB,
                                         s: DepositContractSnapshot) =

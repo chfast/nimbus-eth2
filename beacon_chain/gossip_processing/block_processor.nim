@@ -9,7 +9,7 @@
 
 import
   std/math,
-  stew/results,
+  stew/[objects, results],
   chronicles, chronos, metrics,
   eth/async_utils,
   ../spec/datatypes/[phase0, altair, bellatrix],
@@ -335,6 +335,8 @@ proc runQueueProcessingLoop*(self: ref BlockProcessor) {.async.} =
       idleTimeout = 10.milliseconds
       web3Timeout = 650.milliseconds
 
+      defaultBellatrixPayload = default(bellatrix.ExecutionPayload)
+
     discard await idleAsync().withTimeout(idleTimeout)
 
     let
@@ -344,10 +346,13 @@ proc runQueueProcessingLoop*(self: ref BlockProcessor) {.async.} =
         if  hasExecutionPayload and
             # Allow local testnets to run without requiring an execution layer
             blck.blck.bellatrixData.message.body.execution_payload !=
-              default(bellatrix.ExecutionPayload):
+              defaultBellatrixPayload:
           try:
+            # Minimize window for Eth1 monitor to shut down connection
+            await self.consensusManager.eth1Monitor.ensureDataProvider()
+
             await newExecutionPayload(
-              self.consensusManager.web3Provider,
+              self.consensusManager.eth1Monitor.dataProvider,
               blck.blck.bellatrixData.message.body.execution_payload)
           except CatchableError as err:
             info "runQueueProcessingLoop: newExecutionPayload failed",
@@ -357,10 +362,12 @@ proc runQueueProcessingLoop*(self: ref BlockProcessor) {.async.} =
           # Vacuously
           PayloadExecutionStatus.valid
 
-    # https://github.com/ethereum/execution-apis/blob/v1.0.0-alpha.5/src/engine/specification.md#specification
-    # "Client software MUST discard the payload if it's deemed invalid."
-    if executionPayloadStatus == PayloadExecutionStatus.invalid:
-      info "runQueueProcessingLoop: execution payload invalid"
+    if executionPayloadStatus in [
+        PayloadExecutionStatus.invalid,
+        PayloadExecutionStatus.invalid_block_hash,
+        PayloadExecutionStatus.invalid_terminal_block]:
+      info "runQueueProcessingLoop: execution payload invalid",
+        executionPayloadStatus
       if not blck.resfut.isNil:
         blck.resfut.complete(Result[void, BlockError].err(BlockError.Invalid))
       continue
@@ -393,12 +400,14 @@ proc runQueueProcessingLoop*(self: ref BlockProcessor) {.async.} =
         parent_hash = blck.blck.bellatrixData.message.body.execution_payload.parent_hash,
         executionPayloadStatus
 
-      if  headBlockRoot      != default(Eth2Digest) and
-          finalizedBlockRoot != default(Eth2Digest):
+      if not (headBlockRoot.isZeroMemory or finalizedBlockRoot.isZeroMemory):
         try:
+          # Minimize window for Eth1 monitor to shut down connection
+          await self.consensusManager.eth1Monitor.ensureDataProvider()
+
           discard awaitWithTimeout(
             forkchoiceUpdated(
-              self.consensusManager.web3Provider, headBlockRoot,
+              self.consensusManager.eth1Monitor.dataProvider, headBlockRoot,
               finalizedBlockRoot),
             web3Timeout):
               info "runQueueProcessingLoop: forkchoiceUpdated timed out"

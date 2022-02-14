@@ -313,8 +313,9 @@ proc importInterchangeV5Impl*(
     # (the last before the earliest) the minSlotViolation check stays consistent.
     var maxValidSlotSeen = -1
 
-    for b in 0 ..< spdir.data[v].signed_blocks.len:
-      template B: untyped = spdir.data[v].signed_blocks[b]
+    if spdir.data[v].signed_blocks.len >= 1:
+      # Minification, to limit Sqlite IO we only import the last block after sorting
+      template B: untyped = spdir.data[v].signed_blocks[^1]
       let status = db.registerBlock(
         parsedKey, B.slot.Slot, B.signing_root.Eth2Digest
       )
@@ -341,11 +342,9 @@ proc importInterchangeV5Impl*(
           result = siPartial
           continue
 
-      if B.slot.int > maxValidSlotSeen:
-        maxValidSlotSeen = B.slot.int
-
     # Now prune everything that predates
     # this interchange file max slot
+    # Even if the block is not imported, pruning will keep the latest one.
     db.pruneBlocks(parsedKey, Slot maxValidSlotSeen)
 
     # Attestations
@@ -357,75 +356,30 @@ proc importInterchangeV5Impl*(
     var maxValidSourceEpochSeen = -1
     var maxValidTargetEpochSeen = -1
 
+    # We do a first pass over the data to fine the max source/target seen
     for a in 0 ..< spdir.data[v].signed_attestations.len:
       template A: untyped = spdir.data[v].signed_attestations[a]
-      let status = db.registerAttestation(
-        parsedKey,
-        A.source_epoch.Epoch,
-        A.target_epoch.Epoch,
-        A.signing_root.Eth2Digest
-      )
-      if status.isErr():
-        # We might be importing a duplicate which EIP-3076 allows
-        # there is no reason during normal operation to integrate
-        # a duplicate so checkSlashableAttestation would have rejected it.
-        # We special-case that for imports.
-        if status.error.kind == DoubleVote and
-            A.signing_root.Eth2Digest != ZeroDigest and
-            status.error.existingAttestation == A.signing_root.Eth2Digest:
-          warn "Attestation already exists in the DB",
-            pubkey = spdir.data[v].pubkey.PubKeyBytes.toHex(),
-            candidateAttestation = A,
-            conflict = status.error()
-          continue
-
-        elif status.error.kind == SurroundVote:
-          doAssert A.source_epoch.Epoch == status.error.sourceSlashable
-          doAssert A.target_epoch.Epoch == status.error.targetSlashable
-
-          # Formal proof of correctness: https://github.com/michaelsproul/slashing-proofs
-          let synth = SPDIR_SignedAttestation(
-            source_epoch: EpochString max(status.error.sourceSlashable, status.error.sourceExisting),
-            target_epoch: EpochString max(status.error.targetSlashable, status.error.targetExisting)
-          )
-
-          warn "Slashable surround vote. Constructing a synthetic attestation to reconcile DB and import",
-            pubkey = spdir.data[v].pubkey.PubKeyBytes.toHex(),
-            candidateAttestation = A,
-            conflict = status.error(),
-            syntheticAttestation = synth
-          
-          db.registerSyntheticAttestation(
-            parsedKey,
-            synth.source_epoch.Epoch,
-            synth.target_epoch.Epoch
-          )
-
-          if synth.source_epoch.int > maxValidSourceEpochSeen:
-            maxValidSourceEpochSeen = synth.source_epoch.int
-          if synth.target_epoch.int > maxValidTargetEpochSeen:
-            maxValidTargetEpochSeen = synth.target_epoch.int
-
-          result = siPartial
-          continue
-        else:
-          error "Slashable vote. Skipping its import.",
-            pubkey = spdir.data[v].pubkey.PubKeyBytes.toHex(),
-            candidateAttestation = A,
-            conflict = status.error()
-          result = siPartial
-          continue
 
       if A.source_epoch.int > maxValidSourceEpochSeen:
         maxValidSourceEpochSeen = A.source_epoch.int
       if A.target_epoch.int > maxValidTargetEpochSeen:
         maxValidTargetEpochSeen = A.target_epoch.int
 
-    # Now prune everything that predates
-    # this interchange file max slot
     if maxValidSourceEpochSeen < 0 or maxValidTargetEpochSeen < 0:
       doAssert maxValidSourceEpochSeen == -1 and maxValidTargetEpochSeen == -1
       notice "No attestation found in slashing interchange file for validator",
         pubkey = spdir.data[v].pubkey.PubKeyBytes.toHex()
       continue
+
+    # See formal proof https://github.com/michaelsproul/slashing-proofs
+    # Normally source < target for consensus, no impact if source == target
+    # for slashing protection
+    let minified = Epoch max(maxValidSourceEpochSeen, maxValidTargetEpochSeen)
+
+    db.registerSyntheticAttestation(
+      parsedKey,
+      minified,
+      minified
+    )
+
     db.pruneAttestations(parsedKey, maxValidSourceEpochSeen, maxValidTargetEpochSeen)

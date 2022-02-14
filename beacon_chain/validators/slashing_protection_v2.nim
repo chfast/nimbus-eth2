@@ -1240,7 +1240,7 @@ proc registerSyntheticAttestation*(
        validator: ValidatorPubKey,
        source, target: Epoch) =
   ## Add a synthetic attestation to the slashing protection DB
-  doAssert source < target
+  doAssert source <= target # Spec require source < target, for synthetic attestation for slashing protection we want max(source, target)
 
   let valID = db.getOrRegisterValidator(none(ValidatorIndex), validator)
 

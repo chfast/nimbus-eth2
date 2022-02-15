@@ -503,7 +503,7 @@ proc cmdImportEra(conf: DbConf, cfg: RuntimeConfig) =
       let header = readRecord(f, data).valueOr:
         break
 
-      if header.typ ==  SnappyBeaconBlock:
+      if header.typ == SnappyBeaconBlock:
         withTimer(timers[tBlock]):
           let uncompressed = framingFormatUncompress(data)
           let blck = try: readSszForkedSignedBeaconBlock(cfg, uncompressed)

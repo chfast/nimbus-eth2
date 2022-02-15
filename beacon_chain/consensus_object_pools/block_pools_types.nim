@@ -15,7 +15,7 @@ import
   # Internals
   ../spec/[signatures_batch, forks, helpers],
   ../spec/datatypes/[phase0, altair, bellatrix],
-  ".."/beacon_chain_db,
+  ".."/[beacon_chain_db, era_db],
   ../validators/validator_monitor,
   ./block_dag
 
@@ -83,6 +83,8 @@ type
     db*: BeaconChainDB
       ## ColdDB - Stores the canonical chain
 
+    era*: EraDB
+
     validatorMonitor*: ref ValidatorMonitor
 
     # -----------------------------------
@@ -114,6 +116,9 @@ type
     backfill*: BeaconBlockSummary
     ## The backfill points to the oldest block that we have in the database -
     ## when backfilling, the first block to download is the parent of this block
+
+    frontfill*: Slot
+    ## The slot up to which we managed to use era files to load blocks
 
     heads*: seq[BlockRef]
     ## Candidate heads of candidate chains

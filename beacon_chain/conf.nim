@@ -976,6 +976,10 @@ func outWalletFile*(config: BeaconNodeConf): Option[OutFile] =
 func databaseDir*(config: AnyConf): string =
   config.dataDir / "db"
 
+func eraDir*(config: AnyConf): string =
+  # TODO this should be shared between all instances of the same type
+  config.dataDir / "era"
+
 template writeValue*(writer: var JsonWriter,
                      value: TypedInputFile|InputFile|InputDir|OutPath|OutDir|OutFile) =
   writer.writeValue(string value)

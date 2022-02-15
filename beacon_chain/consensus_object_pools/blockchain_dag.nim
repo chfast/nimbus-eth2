@@ -13,8 +13,8 @@ import
   metrics, snappy, chronicles,
   ../spec/[beaconstate, eth2_merkleization, eth2_ssz_serialization, helpers,
     state_transition, validator],
-  ../spec/datatypes/[phase0, altair],
-  ".."/beacon_chain_db,
+  ../spec/datatypes/[phase0, altair, bellatrix],
+  ".."/[beacon_chain_db, era_db],
   "."/[block_pools_types, block_quarantine]
 
 export
@@ -407,30 +407,70 @@ proc getForkedBlock*(db: BeaconChainDB, root: Eth2Digest):
   else:
     err()
 
-proc getForkedBlock*(
-    dag: ChainDAGRef, root: Eth2Digest): Opt[ForkedTrustedSignedBeaconBlock] =
-  dag.db.getForkedBlock(root)
+proc getBlock*[T: ForkyTrustedSignedBeaconBlock](
+    dag: ChainDAGRef, bid: BlockId): Opt[T] =
+  withState(dag.headState.data):
+    when T is phase0.TrustedSignedBeaconBlock:
+      dag.db.getPhase0Block(bid.root) or
+        getBlock[T](dag.era, state.data, bid.slot, Opt[Eth2Digest].ok(bid.root))
+    elif T is altair.TrustedSignedBeaconBlock:
+      dag.db.getAltairBlock(bid.root) or
+        getBlock[T](dag.era, state.data, bid.slot, Opt[Eth2Digest].ok(bid.root))
+    elif T is bellatrix.TrustedSignedBeaconBlock:
+      dag.db.getMergeBlock(bid.root) or
+        getBlock[T](dag.era, state.data, bid.slot, Opt[Eth2Digest].ok(bid.root))
+    else: static: raiseAssert "Unknown block type"
+
+proc getBlockSSZ*(dag: ChainDAGRef, bid: BlockId, bytes: var seq[byte]): bool =
+  # Load the SSZ-encoded data of a block into `bytes`, overwriting the existing
+  # content
+  # careful: there are two snappy encodings in use, with and without framing!
+  # Returns true if the block is found, false if not
+
+  if bid.slot <= dag.finalizedHead.slot:
+    let start = Moment.now()
+    withState(dag.headState.data):
+      let res = getBlockSSZ(dag.era, state.data, bid.slot, bytes)
+      if res.isOk():
+        notice "Read block from era", dur = Moment.now() - start
+        return true
+      else:
+        notice "Not in era", err = res.error()
+
+  let start = Moment.now()
+  defer: notice "Read block from db", dur = Moment.now() - start
+  case dag.cfg.blockForkAtEpoch(bid.slot.epoch)
+  of BeaconBlockFork.Phase0:
+    dag.db.getPhase0BlockSSZ(bid.root, bytes)
+  of BeaconBlockFork.Altair:
+    dag.db.getAltairBlockSSZ(bid.root, bytes)
+  of BeaconBlockFork.Bellatrix:
+    dag.db.getMergeBlockSSZ(bid.root, bytes)
 
 proc getForkedBlock*(
-    dag: ChainDAGRef, id: BlockId): Opt[ForkedTrustedSignedBeaconBlock] =
-  case dag.cfg.blockForkAtEpoch(id.slot.epoch)
-  of BeaconBlockFork.Phase0:
-    let data = dag.db.getPhase0Block(id.root)
-    if data.isOk():
-      return ok ForkedTrustedSignedBeaconBlock.init(data.get)
-  of BeaconBlockFork.Altair:
-    let data = dag.db.getAltairBlock(id.root)
-    if data.isOk():
-      return ok ForkedTrustedSignedBeaconBlock.init(data.get)
-  of BeaconBlockFork.Bellatrix:
-    let data = dag.db.getMergeBlock(id.root)
-    if data.isOk():
-      return ok ForkedTrustedSignedBeaconBlock.init(data.get)
+    dag: ChainDAGRef, bid: BlockId): Opt[ForkedTrustedSignedBeaconBlock] =
+
+  let fork = dag.cfg.blockForkAtEpoch(bid.slot.epoch)
+  result.ok(ForkedTrustedSignedBeaconBlock(kind: fork))
+  withBlck(result.get()):
+    type T = type(blck)
+    static: doAssert T is ForkyTrustedSignedBeaconBlock
+    blck = getBlock[T](dag, bid).valueOr:
+      result.err()
+      return
 
 proc getForkedBlock*(
     dag: ChainDAGRef, blck: BlockRef): ForkedTrustedSignedBeaconBlock =
   dag.getForkedBlock(blck.bid).expect(
     "BlockRef block should always load, database corrupt?")
+
+proc getForkedBlock*(
+    dag: ChainDAGRef, root: Eth2Digest): Opt[ForkedTrustedSignedBeaconBlock] =
+  let bid = dag.getBlockId(root)
+  if bid.isSome():
+    dag.getForkedBlock(bid.get())
+  else:
+    dag.db.getForkedBlock(root)
 
 proc updateBeaconMetrics(state: StateData, cache: var StateCache) =
   # https://github.com/ethereum/eth2.0-metrics/blob/master/metrics.md#additional-metrics
@@ -466,6 +506,7 @@ proc updateBeaconMetrics(state: StateData, cache: var StateCache) =
 
 proc init*(T: type ChainDAGRef, cfg: RuntimeConfig, db: BeaconChainDB,
            validatorMonitor: ref ValidatorMonitor, updateFlags: UpdateFlags,
+           eraPath = ".",
            onBlockCb: OnBlockCallback = nil, onHeadCb: OnHeadCallback = nil,
            onReorgCb: OnReorgCallback = nil,
            onFinCb: OnFinalizedCallback = nil): ChainDAGRef =
@@ -612,6 +653,7 @@ proc init*(T: type ChainDAGRef, cfg: RuntimeConfig, db: BeaconChainDB,
 
   let dag = ChainDAGRef(
     db: db,
+    era: EraDB.new(cfg, eraPath),
     validatorMonitor: validatorMonitor,
     genesis: genesisRef,
     tail: tailRef,
@@ -727,6 +769,20 @@ proc init*(T: type ChainDAGRef, cfg: RuntimeConfig, db: BeaconChainDB,
 
   let stateTick = Moment.now()
 
+  block: # See if we can front-fill some blocks from era files
+    if dag.backfill.slot > 0:
+      withState(dag.headState.data):
+        for i in 0'u64..<state.data.historical_roots.asSeq().lenu64():
+          var found = false
+          for summary in dag.era.getSummaries(addr state.data, i + 1):
+            dag.backfillBlocks[summary.slot.int] = summary.root
+            dag.frontfill = summary.slot
+            found = true
+          if not found: break
+
+
+  let frontfillTick = Moment.now()
+
   # Pruning metadata
   dag.lastPrunePoint = dag.finalizedHead
 
@@ -744,10 +800,12 @@ proc init*(T: type ChainDAGRef, cfg: RuntimeConfig, db: BeaconChainDB,
     finalizedHead = shortLog(dag.finalizedHead),
     tail = shortLog(dag.tail),
     backfill = (dag.backfill.slot, shortLog(dag.backfill.parent_root)),
+    frontfill = dag.frontfill,
     finalizedDur = finalizedTick - startTick,
     summariesDur = summariesTick - finalizedTick,
     stateDur = stateTick - summariesTick,
-    indexDur = Moment.now() - stateTick
+    frontfillDur = frontfillTick - stateTick,
+    indexDur = Moment.now() - frontfillTick
 
   dag
 
@@ -990,19 +1048,22 @@ proc applyBlock(
 
   case dag.cfg.blockForkAtEpoch(blck.slot.epoch)
   of BeaconBlockFork.Phase0:
-    let data = dag.db.getPhase0Block(blck.root).expect("block loaded")
+    let data = getBlock[phase0.TrustedSignedBeaconBlock](dag, blck.bid).expect(
+      "block loaded")
     state_transition(
       dag.cfg, state.data, data, cache, info,
       dag.updateFlags + {slotProcessed}, noRollback).expect(
         "Blocks from database must not fail to apply")
   of BeaconBlockFork.Altair:
-    let data = dag.db.getAltairBlock(blck.root).expect("block loaded")
+    let data = getBlock[altair.TrustedSignedBeaconBlock](dag, blck.bid).expect(
+      "block loaded")
     state_transition(
       dag.cfg, state.data, data, cache, info,
       dag.updateFlags + {slotProcessed}, noRollback).expect(
         "Blocks from database must not fail to apply")
   of BeaconBlockFork.Bellatrix:
-    let data = dag.db.getMergeBlock(blck.root).expect("block loaded")
+    let data = getBlock[bellatrix.TrustedSignedBeaconBlock](dag, blck.bid).expect(
+      "block loaded")
     state_transition(
       dag.cfg, state.data, data, cache, info,
       dag.updateFlags + {slotProcessed}, noRollback).expect(
@@ -1736,19 +1797,6 @@ proc aggregateAll*(
     err("aggregate: no attesting keys")
   else:
     ok(finish(aggregateKey))
-
-proc getBlockSSZ*(dag: ChainDAGRef, id: BlockId, bytes: var seq[byte]): bool =
-  # Load the SSZ-encoded data of a block into `bytes`, overwriting the existing
-  # content
-  # careful: there are two snappy encodings in use, with and without framing!
-  # Returns true if the block is found, false if not
-  case dag.cfg.blockForkAtEpoch(id.slot.epoch)
-  of BeaconBlockFork.Phase0:
-    dag.db.getPhase0BlockSSZ(id.root, bytes)
-  of BeaconBlockFork.Altair:
-    dag.db.getAltairBlockSSZ(id.root, bytes)
-  of BeaconBlockFork.Bellatrix:
-    dag.db.getMergeBlockSSZ(id.root, bytes)
 
 func needsBackfill*(dag: ChainDAGRef): bool =
   dag.backfill.slot > dag.genesis.slot

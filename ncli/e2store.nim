@@ -7,6 +7,8 @@ import
   ../beacon_chain/spec/forks,
   ../beacon_chain/spec/eth2_ssz_serialization
 
+export io2
+
 const
   E2Version* = [byte 0x65, 0x32]
   E2Index* = [byte 0x69, 0x32]
@@ -186,10 +188,13 @@ proc readIndex*(f: IoHandle): Result[Index, string] =
   for i in 0..<count:
     ? f.readFileExact(buf)
 
-    let offset = uint64.fromBytesLE(buf)
-
-    # Wrapping math is actually convenient here
-    let absolute = cast[int64](cast[uint64](startPos) + offset)
+    let
+      offset = uint64.fromBytesLE(buf)
+      absolute =
+        if offset == 0: 0'i64
+        else:
+          # Wrapping math is actually convenient here
+          cast[int64](cast[uint64](startPos) + offset)
 
     if absolute < 0 or absolute > fileSize: return err("Invalid offset")
     offsets[i] = absolute

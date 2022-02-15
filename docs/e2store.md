@@ -166,7 +166,7 @@ Each era is identified by when it ends. Thus, the genesis era is era 0, followed
 * `short-historical-root` is the first 4 bytes of the last historical root in the last state in the era file, lower-case hex-encoded (8 characters), except the genesis era which instead uses the `genesis_validators_root` field from the genesis state.
   * The root is available as `state.historical_roots[era - 1]` except genesis, whose historical root is all `0`
 
-An era file containing the mainnet genesis is thus named `mainnet-00000000-0000-0001.era`, and the era after that `mainnet-40cf2f3c-0001-0001.era`.
+An era file containing the mainnet genesis is thus named `mainnet-00000-00001-4b363db9.era`, and the era after that `mainnet-00001-00001-40cf2f3c.era`.
 
 ## Structure
 

@@ -388,7 +388,7 @@ proc runQueueProcessingLoop*(self: ref BlockProcessor) {.async.} =
       let
         headBlockRoot = self.consensusManager.dag.head.executionBlockRoot
         finalizedBlockRoot =
-          if self.consensusManager.dag.finalizedHead.blck.executionBlockRoot != default(Eth2Digest):
+          if not self.consensusManager.dag.finalizedHead.blck.executionBlockRoot.isZero:
             self.consensusManager.dag.finalizedHead.blck.executionBlockRoot
           else:
             default(Eth2Digest)

@@ -451,15 +451,37 @@ proc getBlockByNumber*(p: Web3DataProviderRef,
 
 proc getPayload*(p: Web3DataProviderRef,
                  payloadId: bellatrix.PayloadID): Future[engine_api.ExecutionPayloadV1] =
+  # Eth1 monitor can recycle connections without (external) warning; at least,
+  # don't crash.
+  if p.isNil:
+    var epr: Future[engine_api.ExecutionPayloadV1]
+    epr.complete(default(engine_api.ExecutionPayloadV1))
+    return epr
+
   p.web3.provider.engine_getPayloadV1(FixedBytes[8] payloadId)
 
 proc newPayload*(p: Web3DataProviderRef,
                  payload: engine_api.ExecutionPayloadV1): Future[PayloadStatusV1] =
+  # Eth1 monitor can recycle connections without (external) warning; at least,
+  # don't crash.
+  if p.isNil:
+    var epr: Future[PayloadStatusV1]
+    epr.complete(PayloadStatusV1(status: PayloadExecutionStatus.syncing))
+    return epr
+
   p.web3.provider.engine_newPayloadV1(payload)
 
 proc forkchoiceUpdated*(p: Web3DataProviderRef,
                         headBlock, finalizedBlock: Eth2Digest):
                         Future[engine_api.ForkchoiceUpdatedResponse] =
+  # Eth1 monitor can recycle connections without (external) warning; at least,
+  # don't crash.
+  if p.isNil:
+    var fcuR: Future[engine_api.ForkchoiceUpdatedResponse]
+    fcuR.complete(engine_api.ForkchoiceUpdatedResponse(
+      payloadStatus: PayloadStatusV1(status: PayloadExecutionStatus.syncing)))
+    return fcuR
+
   p.web3.provider.engine_forkchoiceUpdatedV1(
     ForkchoiceStateV1(
       headBlockHash: headBlock.asBlockHash,
@@ -478,6 +500,14 @@ proc forkchoiceUpdated*(p: Web3DataProviderRef,
                         randomData: array[32, byte],
                         suggestedFeeRecipient: Eth1Address):
                         Future[engine_api.ForkchoiceUpdatedResponse] =
+  # Eth1 monitor can recycle connections without (external) warning; at least,
+  # don't crash.
+  if p.isNil:
+    var fcuR: Future[engine_api.ForkchoiceUpdatedResponse]
+    fcuR.complete(engine_api.ForkchoiceUpdatedResponse(
+      payloadStatus: PayloadStatusV1(status: PayloadExecutionStatus.syncing)))
+    return fcuR
+
   p.web3.provider.engine_forkchoiceUpdatedV1(
     ForkchoiceStateV1(
       headBlockHash: headBlock.asBlockHash,

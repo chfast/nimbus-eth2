@@ -525,12 +525,12 @@ proc makeBeaconBlockForHeadAndSlot*(node: BeaconNode,
               else:
                 default(Eth2Digest)
             latestHead =
-              if node.dag.head.executionBlockRoot != default(Eth2Digest):
+              if not node.dag.head.executionBlockRoot.isZero:
                 node.dag.head.executionBlockRoot
               else:
                 terminalBlockHash
             latestFinalized =
-              if node.dag.finalizedHead.blck.executionBlockRoot != default(Eth2Digest):
+              if not node.dag.finalizedHead.blck.executionBlockRoot.isZero:
                 node.dag.finalizedHead.blck.executionBlockRoot
               else:
                 terminalBlockHash
